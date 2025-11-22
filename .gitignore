@@ -1,0 +1,10 @@
+.env
+credenciales.json
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.env.local
+.streamlit/
+.venv/
+.envrc
