@@ -1,167 +1,189 @@
-"""Build a cleaned pandas DataFrame from the LLM output dict.
+# logic/clean_dataframe.py
 
-This module focuses on deterministic cleaning and type conversions.
-"""
-from typing import Dict, Any, List
 import pandas as pd
-import json
+from typing import Dict, Any, List, Optional
 
 
-def build_clean_dataframe(clean_dict: Dict[str, List[Any]]) -> pd.DataFrame:
-    headers = clean_dict.get("headers", [])
-    rows = clean_dict.get("rows", [])
+def build_clean_dataframe(clean_dict: Dict[str, Any]) -> pd.DataFrame:
+    """
+    Construye un DataFrame limpio a partir del dict devuelto por Gemini.
 
-    # Fallbacks when headers are missing
-    if not headers:
-        # If there are no rows, we cannot infer headers
-        if not rows:
-            raise ValueError("No se recibieron encabezados desde el LLM.")
+    clean_dict debe tener el formato:
+    {
+      "headers": [...],
+      "rows": [
+        [...],
+        ...
+      ]
+    }
 
-        # Heurística 1: if the first row looks like header names (mostly non-numeric strings)
-        def looks_like_header(row: List[Any]) -> bool:
-            non_empty = [str(x).strip() for x in row if str(x).strip() != ""]
-            if not non_empty:
-                return False
-            # if majority of cells contain letters (not numbers), assume header
-            lettery = sum(1 for v in non_empty if any(c.isalpha() for c in v))
-            return lettery >= max(1, len(non_empty) // 2)
+    - Normaliza strings.
+    - Limpia marcadores como #REF!, #N/A, -----, "".
+    - Detecta columnas de montos y las convierte a numérico.
+    - Detecta columnas de fecha y las convierte a datetime.
+    """
 
-        if rows and looks_like_header(rows[0]) and len(rows) > 1:
-            # Promote first row to headers, drop from rows
-            headers = [str(x).strip() or f"Unnamed_Column_{i+1}" for i, x in enumerate(rows[0])]
-            rows = rows[1:]
+    raw_headers: List[Any] = clean_dict.get("headers") or []
+    rows: List[List[Any]] = clean_dict.get("rows") or []
+
+    if not raw_headers:
+        raise ValueError("build_clean_dataframe: 'headers' está vacío o no existe.")
+
+    # ---------------------------------------------------------
+    # 0) Normalizar y hacer ÚNICOS los headers
+    # ---------------------------------------------------------
+    headers: List[str] = []
+    seen: dict[str, int] = {}
+
+    for idx, h in enumerate(raw_headers):
+        base = str(h).strip().lower().replace(" ", "_") if h is not None else ""
+        if base == "":
+            base = f"col_{idx+1}"
+
+        count = seen.get(base, 0)
+        if count == 0:
+            name = base
         else:
-            # Fallback: synthesize generic column names based on max row length
-            max_cols = max((len(r) for r in rows), default=0)
-            headers = [f"col_{i+1}" for i in range(max_cols)]
+            name = f"{base}_{count+1}"
+        seen[base] = count + 1
+        headers.append(name)
 
+    # Si no hay filas, devolvemos DF vacío con las columnas ya normalizadas
     if not rows:
         return pd.DataFrame(columns=headers)
 
     df = pd.DataFrame(rows, columns=headers)
 
-    # Normalize strings and replace garbage values
+    # ---------------------------------------------------------
+    # 1) Limpieza general de strings (columna por columna)
+    # ---------------------------------------------------------
+    replacements = {
+        "#REF!": None,
+        "#N/A": None,
+        "-----": None,
+        "": None,
+    }
+
     for col in df.columns:
+        # Todo a string + strip SOLO a nivel de serie
         df[col] = df[col].astype(str).str.strip()
-        df[col] = df[col].replace({"#REF!": None, "#N/A": None, "-----": None, "": None})
+        # Reemplazar marcadores por None (NaN al convertir)
+        df[col] = df[col].replace(replacements)
 
-    # Detect amount-like columns using only these keys (important)
-    amount_keys = ["monto", "saldo", "ingreso", "total"]
-    posibles_montos = [
-        c for c in df.columns if any(k in c.lower() for k in amount_keys)
-    ]
+    # ---------------------------------------------------------
+    # 2) Detectar columnas de montos
+    #    OJO: no queremos agarrar "tipo_gasto", "tipo_ingreso", etc.
+    # ---------------------------------------------------------
+    columnas_monto: List[str] = []
+    for c in df.columns:
+        name = c.lower()
+        if any(key in name for key in ["monto", "saldo", "ingreso", "total"]):
+            if not name.startswith("tipo") and "descripcion" not in name:
+                columnas_monto.append(c)
 
-    # Convert amount columns: remove currency symbols and thousands separators
-    for col in posibles_montos:
-        serie = df[col].astype(str)
-        serie = serie.str.replace("$", "", regex=False).str.replace(" ", "", regex=False)
-        # Remove dots used as thousands separator but keep decimal comma
-        serie = serie.str.replace(".", "", regex=False)
-        serie = serie.str.replace(",", ".", regex=False)
+    for col in columnas_monto:
+        serie = (
+            df[col]
+            .astype(str)
+            .str.replace("$", "", regex=False)
+            .str.replace(" ", "", regex=False)
+            .str.replace(".", "", regex=False)   # separador de miles
+            .str.replace(",", ".", regex=False)  # coma decimal -> punto
+        )
         df[col] = pd.to_numeric(serie, errors="coerce")
 
-    # Detect date-like columns by these keys
-    date_keys = ["fecha", "dia"]
-    posibles_fechas = [c for c in df.columns if any(k in c.lower() for k in date_keys)]
-    for col in posibles_fechas:
+    # ---------------------------------------------------------
+    # 3) Detectar columnas de fecha
+    # ---------------------------------------------------------
+    columnas_fecha: List[str] = [
+        c for c in df.columns
+        if any(key in c.lower() for key in ["fecha", "dia"])
+    ]
+
+    for col in columnas_fecha:
         df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
     return df
 
 
-def clean_tabular_data(spreadsheet_data: List[List[Any]]) -> Dict[str, List[Any]]:
+# ==========================================================
+#   HELPERS PARA TESTING (SIN IA / SIN GEMINI)
+# ==========================================================
+
+def clean_tabular_data(matrix: List[List[Any]]) -> Dict[str, Any]:
     """
-    Identifica la tabla principal en una matriz de celdas de hoja de cálculo,
-    limpia sus encabezados y filas, y la devuelve en formato {'headers':..., 'rows':...}.
+    Extrae filas tipo tabla desde una matriz 2D (como la devuelta por Google Sheets).
+    Versión heurística sin LLM, útil para tests locales.
 
-    This implements the legacy cleaning function provided by the user.
+    Retorna:
+      {
+        "headers": [...],
+        "rows": [...]
+      }
     """
 
-    def clean_cell(cell_value: Any) -> str:
-        # Normalize to string
-        if cell_value is None:
-            return ""
-        if not isinstance(cell_value, str):
-            # If it's numeric or other, convert to str and strip
-            cell_value = str(cell_value)
+    header_idx: Optional[int] = None
+    max_nonempty = 0
 
-        cleaned_value = cell_value.strip()
+    # Buscar la fila con más columnas no vacías
+    for i, row in enumerate(matrix):
+        non_empty = sum(1 for cell in row if str(cell).strip() != "")
+        if non_empty > max_nonempty:
+            max_nonempty = non_empty
+            header_idx = i
 
-        # Handle errors and placeholders
-        if cleaned_value in ["#REF!", "#N/A", "---", "--", "      -", "----------", "-"]:
-            return ""
+    if header_idx is None:
+        raise ValueError("clean_tabular_data: No se pudo detectar un encabezado válido.")
 
-        # Monetary values: remove '$' and '.' thousands separators
-        if cleaned_value.startswith('-$'):
-            cleaned_value = '-' + cleaned_value[2:].replace('.', '').replace(',', '')
-        elif cleaned_value.startswith('$'):
-            cleaned_value = cleaned_value[1:].replace('.', '').replace(',', '')
+    headers = [str(h).strip() for h in matrix[header_idx]]
 
-        # Remove surrounding double quotes
-        if cleaned_value.startswith('"') and cleaned_value.endswith('"'):
-            cleaned_value = cleaned_value[1:-1]
-
-        return cleaned_value
-
-    headers: List[str] = []
-    rows: List[List[str]] = []
-
-    # Heuristic: header row appears at index 5 (0-based) in the example
-    # but fall back to searching for a row that starts with 'Nº'
-    header_index = None
-    if len(spreadsheet_data) > 6 and any(str(c).strip().lower().startswith('nº') or str(c).strip().lower().startswith('no') for c in spreadsheet_data[6]):
-        header_index = 6
-    else:
-        for i, row in enumerate(spreadsheet_data):
-            if not row:
-                continue
-            first = str(row[0]).strip().lower()
-            if first in ('nº', 'no', 'no.'):
-                header_index = i
-                break
-
-    # Default to index 6 if not found but array long enough
-    if header_index is None and len(spreadsheet_data) > 6:
-        header_index = 6
-
-    if header_index is None:
-        return {"headers": [], "rows": []}
-
-    header_raw = spreadsheet_data[header_index][:14]
-    headers = [clean_cell(h) for h in header_raw]
-
-    # Extract rows starting after header_index
-    for i in range(header_index + 1, len(spreadsheet_data)):
-        raw_row = spreadsheet_data[i]
-        if not raw_row:
-            continue
-        current_row_sliced = raw_row[:14]
-        cleaned_row = [clean_cell(cell) for cell in current_row_sliced]
-
-        # First col must be numeric id
-        first_col_value = cleaned_row[0]
-        is_numeric_id = False
-        if first_col_value:
-            try:
-                int(first_col_value)
-                is_numeric_id = True
-            except ValueError:
-                is_numeric_id = False
-
-        has_meaningful_data = (
-            (len(cleaned_row) > 2 and cleaned_row[2] != "") or
-            (len(cleaned_row) > 4 and cleaned_row[4] != "") or
-            (len(cleaned_row) > 5 and cleaned_row[5] != "")
-        )
-
-        # Stop on explicit 'Total proyecto' marker
-        if isinstance(first_col_value, str) and first_col_value.lower().startswith('total proyecto'):
+    # Recoger filas siguientes mientras no estén completamente vacías
+    rows: List[List[Optional[str]]] = []
+    for r in matrix[header_idx + 1:]:
+        cleaned = [None if str(c).strip() == "" else str(c).strip() for c in r]
+        if all(x is None for x in cleaned):
             break
+        rows.append(cleaned)
 
-        if not any(cleaned_row):
-            continue
+    return {"headers": headers, "rows": rows}
 
-        if is_numeric_id and has_meaningful_data:
-            rows.append(cleaned_row)
+
+def extract_main_table(matrix: List[List[Any]]) -> Dict[str, Any]:
+    """
+    Versión heurística NO LLM para detectar la tabla principal.
+    Se usa solo para testing.
+
+    Busca la fila con más "pinta" de encabezado (Nº, TIPO, GASTO, INGRESO, etc.),
+    y toma lo que viene debajo como tabla.
+    """
+
+    header_keywords = [
+        "Nº", "TIPO", "GASTO", "INGRESO", "ESTADO",
+        "MONTO", "FECHA", "DESCRIPCION", "RESPONSABLE"
+    ]
+
+    best_match_row: Optional[List[Any]] = None
+    best_score = 0
+
+    for row in matrix:
+        row_str = " ".join([str(c).upper() for c in row])
+        score = sum(1 for k in header_keywords if k in row_str)
+        if score > best_score:
+            best_score = score
+            best_match_row = row
+
+    if best_match_row is None:
+        raise ValueError("extract_main_table: No se encontró encabezado principal.")
+
+    headers = [str(h).strip() if str(h).strip() != "" else None for h in best_match_row]
+
+    start = matrix.index(best_match_row) + 1
+    rows: List[List[Optional[str]]] = []
+
+    for r in matrix[start:]:
+        cleaned = [None if str(x).strip() == "" else str(x).strip() for x in r]
+        if all(v is None for v in cleaned):
+            break
+        rows.append(cleaned)
 
     return {"headers": headers, "rows": rows}
