@@ -4,6 +4,7 @@ This module focuses on deterministic cleaning and type conversions.
 """
 from typing import Dict, Any, List
 import pandas as pd
+import json
 
 
 def build_clean_dataframe(clean_dict: Dict[str, List[Any]]) -> pd.DataFrame:
@@ -66,3 +67,101 @@ def build_clean_dataframe(clean_dict: Dict[str, List[Any]]) -> pd.DataFrame:
         df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
     return df
+
+
+def clean_tabular_data(spreadsheet_data: List[List[Any]]) -> Dict[str, List[Any]]:
+    """
+    Identifica la tabla principal en una matriz de celdas de hoja de cálculo,
+    limpia sus encabezados y filas, y la devuelve en formato {'headers':..., 'rows':...}.
+
+    This implements the legacy cleaning function provided by the user.
+    """
+
+    def clean_cell(cell_value: Any) -> str:
+        # Normalize to string
+        if cell_value is None:
+            return ""
+        if not isinstance(cell_value, str):
+            # If it's numeric or other, convert to str and strip
+            cell_value = str(cell_value)
+
+        cleaned_value = cell_value.strip()
+
+        # Handle errors and placeholders
+        if cleaned_value in ["#REF!", "#N/A", "---", "--", "      -", "----------", "-"]:
+            return ""
+
+        # Monetary values: remove '$' and '.' thousands separators
+        if cleaned_value.startswith('-$'):
+            cleaned_value = '-' + cleaned_value[2:].replace('.', '').replace(',', '')
+        elif cleaned_value.startswith('$'):
+            cleaned_value = cleaned_value[1:].replace('.', '').replace(',', '')
+
+        # Remove surrounding double quotes
+        if cleaned_value.startswith('"') and cleaned_value.endswith('"'):
+            cleaned_value = cleaned_value[1:-1]
+
+        return cleaned_value
+
+    headers: List[str] = []
+    rows: List[List[str]] = []
+
+    # Heuristic: header row appears at index 5 (0-based) in the example
+    # but fall back to searching for a row that starts with 'Nº'
+    header_index = None
+    if len(spreadsheet_data) > 6 and any(str(c).strip().lower().startswith('nº') or str(c).strip().lower().startswith('no') for c in spreadsheet_data[6]):
+        header_index = 6
+    else:
+        for i, row in enumerate(spreadsheet_data):
+            if not row:
+                continue
+            first = str(row[0]).strip().lower()
+            if first in ('nº', 'no', 'no.'):
+                header_index = i
+                break
+
+    # Default to index 6 if not found but array long enough
+    if header_index is None and len(spreadsheet_data) > 6:
+        header_index = 6
+
+    if header_index is None:
+        return {"headers": [], "rows": []}
+
+    header_raw = spreadsheet_data[header_index][:14]
+    headers = [clean_cell(h) for h in header_raw]
+
+    # Extract rows starting after header_index
+    for i in range(header_index + 1, len(spreadsheet_data)):
+        raw_row = spreadsheet_data[i]
+        if not raw_row:
+            continue
+        current_row_sliced = raw_row[:14]
+        cleaned_row = [clean_cell(cell) for cell in current_row_sliced]
+
+        # First col must be numeric id
+        first_col_value = cleaned_row[0]
+        is_numeric_id = False
+        if first_col_value:
+            try:
+                int(first_col_value)
+                is_numeric_id = True
+            except ValueError:
+                is_numeric_id = False
+
+        has_meaningful_data = (
+            (len(cleaned_row) > 2 and cleaned_row[2] != "") or
+            (len(cleaned_row) > 4 and cleaned_row[4] != "") or
+            (len(cleaned_row) > 5 and cleaned_row[5] != "")
+        )
+
+        # Stop on explicit 'Total proyecto' marker
+        if isinstance(first_col_value, str) and first_col_value.lower().startswith('total proyecto'):
+            break
+
+        if not any(cleaned_row):
+            continue
+
+        if is_numeric_id and has_meaningful_data:
+            rows.append(cleaned_row)
+
+    return {"headers": headers, "rows": rows}
