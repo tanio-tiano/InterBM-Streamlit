@@ -5,6 +5,7 @@ import re
 import ast
 
 from services.gemini import get_gemini_model
+from logic.clean_dataframe import clean_tabular_data
 
 
 def llm_extract_table(raw_matrix: List[List[str]]) -> Dict[str, Any]:
@@ -128,7 +129,8 @@ Aquí viene la matriz (lista de listas):
     # If LLM returned empty result (no headers and no rows), try a deterministic
     # fallback that extracts a table directly from the raw matrix without calling the LLM.
     if isinstance(parsed, dict) and (not parsed.get("headers") and not parsed.get("rows")):
-        fallback = _fallback_extract_from_matrix(raw_matrix)
+        # Prefer the user's legacy deterministic cleaner as fallback
+        fallback = clean_tabular_data(raw_matrix)
         if fallback.get("headers") or fallback.get("rows"):
             return fallback
 
