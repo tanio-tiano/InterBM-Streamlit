@@ -1,42 +1,28 @@
-"""Google Sheets service functions (gspread wrappers).
-
-Provides cached resource functions for Streamlit to initialize and reuse
-the gspread client and to fetch spreadsheets/worksheets.
-"""
-from typing import List
 import streamlit as st
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
-from config import settings
-
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
 @st.cache_resource
-def get_gspread_client() -> gspread.Client:
-    """Initializes and returns an authorized gspread client using a service account."""
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        settings.CRED_FILE,
-        settings.SCOPES,
+def get_gspread_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES
     )
-    client = gspread.authorize(creds)
-    return client
+    return gspread.authorize(creds)
 
 
-@st.cache_resource
-def get_spreadsheet() -> gspread.Spreadsheet:
-    client = get_gspread_client()
-    ss = client.open_by_url(settings.SHEET_URL)
-    return ss
+def get_available_sheets():
+    gc = get_gspread_client()
+    sh = gc.open_by_key("1tc7me60_L-h_btVfofDnMPtVL1VVk-wSLqlFCI4SD1s")  # tu ID
+    return [ws.title for ws in sh.worksheets()]
 
 
-@st.cache_data
-def get_available_sheets() -> List[str]:
-    ss = get_spreadsheet()
-    return [ws.title for ws in ss.worksheets()]
-
-
-@st.cache_resource
-def get_worksheet(sheet_name: str) -> gspread.Worksheet:
-    ss = get_spreadsheet()
-    ws = ss.worksheet(sheet_name)
-    return ws
+def get_worksheet(name: str):
+    gc = get_gspread_client()
+    sh = gc.open_by_key("1tc7me60_L-h_btVfofDnMPtVL1VVk-wSLqlFCI4SD1s")
+    return sh.worksheet(name)
