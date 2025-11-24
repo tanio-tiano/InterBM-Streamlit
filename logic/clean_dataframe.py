@@ -2,6 +2,10 @@
 Deterministic cleaner for messy Google Sheets tables.
 Extracts the main movement table and builds a clean DataFrame.
 """
+"""
+Deterministic cleaner for messy Google Sheets tables.
+Extracts the main movement table and builds a clean DataFrame.
+"""
 
 import pandas as pd
 import unicodedata
