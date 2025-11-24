@@ -6,9 +6,8 @@ components together without containing heavy business logic.
 import streamlit as st
 
 from config import settings
-from services.sheets import get_available_sheets, get_worksheet
-from logic.extract_table import llm_extract_table
-from logic.clean_dataframe import build_clean_dataframe
+from services.sheets import get_available_sheets, get_worksheet  # si ya usas la versión cacheada
+from logic.clean_dataframe import extract_main_table, build_clean_dataframe
 from logic.kpis import calcular_kpis
 from components.sections import (
     render_estado_financiero,
@@ -60,7 +59,7 @@ def main():
     st.subheader("Procesando datos con Gemini…")
     with st.spinner("Limpieza y estructuración de la tabla con LLM…"):
         try:
-            clean = llm_extract_table(raw_values)
+            clean = extract_main_table(raw_values)
             df = build_clean_dataframe(clean)
         except Exception as e:
             st.error(f"Error al procesar la tabla con Gemini:\n{e}")
