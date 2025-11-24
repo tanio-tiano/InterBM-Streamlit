@@ -1,6 +1,9 @@
 streamlit
-python-dotenv
 pandas
+plotly
 gspread
 oauth2client
-google-generativeai
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+ydata-profiling
