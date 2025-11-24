@@ -4,7 +4,7 @@ This file should remain thin: it wires configuration, services and UI
 components together without containing heavy business logic.
 """
 import streamlit as st
-
+from logic.clean_dataframe import extract_main_table, build_clean_dataframe
 from config import settings
 from services.sheets import get_available_sheets, get_worksheet  # si ya usas la versión cacheada
 from logic.clean_dataframe import extract_main_table, build_clean_dataframe
@@ -61,6 +61,7 @@ def main():
         try:
             clean = extract_main_table(raw_values)
             df = build_clean_dataframe(clean)
+
         except Exception as e:
             st.error(f"Error al procesar la tabla con Gemini:\n{e}")
             st.stop()
